@@ -8,7 +8,7 @@ BUILD_DIR := build
 SERVER_BIN := epoll_server
 CLIENT_BIN := epoll_client
 
-SERVER_SRC := tcpepoll.cpp TcpServer.cpp Acceptor.cpp Connection.cpp InetAddress.cpp Socket.cpp Epoll.cpp Channel.cpp EventLoop.cpp
+SERVER_SRC := tcpepoll.cpp TcpServer.cpp InetAddress.cpp Socket.cpp Epoll.cpp Channel.cpp EventLoop.cpp
 CLIENT_SRC := client.cpp InetAddress.cpp
 
 SERVER_OBJ := $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(SERVER_SRC))

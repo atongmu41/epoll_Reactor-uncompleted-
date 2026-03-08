@@ -3,8 +3,6 @@
 #include "public.h"
 #include "InetAddress.h"
 
-#include <chrono>
-
 int run_client(const ClientOptions& opt) {
   if (opt.port == 0) {
     std::cerr << "invalid port\n";
@@ -28,11 +26,9 @@ int run_client(const ClientOptions& opt) {
     return -1;
   }
 
-  const int total_msgs = 100000;
+  const int total_msgs = 1000;
   const int batch_size = 10;  // 若恢复 sleep，则每 batch_size 个包 sleep 一次
   (void)batch_size;
-
-  auto t0 = std::chrono::steady_clock::now();
 
   for (int i = 1; i <= total_msgs; ++i) {
     std::string msg = "这是第" + std::to_string(i) + "次测试";
@@ -74,11 +70,15 @@ int run_client(const ClientOptions& opt) {
       return -1;
     }
 
+    std::cout << "send: " << msg << "\n";
+    std::cout << "recv: " << recv_buf << "\n";
+
+    // 每发送 batch_size 个包后原本 sleep(0.2s)，现按要求注释掉
+    // if (i % batch_size == 0) {
+    //   ::usleep(200000);  // 0.2 秒
+    // }
   }
 
-  auto t1 = std::chrono::steady_clock::now();
-  double sec = std::chrono::duration<double>(t1 - t0).count();
-  std::cout << "发送完成，共传输 " << total_msgs << " 条，耗时 " << sec << " 秒\n";
   ::close(fd);
   return 0;
 }

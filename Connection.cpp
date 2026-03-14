@@ -1,21 +1,20 @@
 #include "Connection.h"
 
 static constexpr uint32_t kConnEventsR =
-    EPOLLIN | EPOLLRDHUP | EPOLLERR;
+    EPOLLIN | EPOLLRDHUP | EPOLLERR | EPOLLET;
 static constexpr uint32_t kConnEventsRW =
-    EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLERR;
+    EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLERR | EPOLLET;
 
 Connection::Connection(EventLoop* loop, int fd)
-    : loop_(loop), fd_(fd), channel_(nullptr),
-      established_at_(std::chrono::steady_clock::now()) {}
+    : loop_(loop), fd_(fd) {
+  auto now = std::chrono::steady_clock::now();
+  established_at_ = now;
+  lastActive_ = now;
+}
 
 Connection::~Connection() {
   if (channel_ && loop_ && loop_->valid()) {
-    loop_->removeChannel(channel_);
-  }
-  if (channel_) {
-    delete channel_;
-    channel_ = nullptr;
+    loop_->removeChannel(channel_.get());
   }
   if (fd_ >= 0) {
     ::close(fd_);
@@ -25,31 +24,32 @@ Connection::~Connection() {
 
 bool Connection::establish() {
   if (!loop_ || fd_ < 0) return false;
-  channel_ = new Channel(fd_);
+  channel_.reset(new Channel(fd_));
   channel_->setEvents(kConnEventsR);
   channel_->setReadCallback(std::bind(&Connection::handleRead, this));
   channel_->setWriteCallback(std::bind(&Connection::handleWrite, this));
   channel_->setErrorCallback(std::bind(&Connection::handleClose, this));
   channel_->setCloseCallback(std::bind(&Connection::handleClose, this));
 
-  if (!loop_->addChannel(channel_)) {
-    delete channel_;
-    channel_ = nullptr;
+  if (!loop_->addChannel(channel_.get())) {
+    channel_.reset();
     return false;
   }
-  established_at_ = std::chrono::steady_clock::now();
+  auto now = std::chrono::steady_clock::now();
+  established_at_ = now;
+  lastActive_ = now;
   return true;
 }
 
 void Connection::handleRead() {
   if (!channel_ || fd_ < 0) return;
   char buf[4096];
-  std::string recv_buf;
   while (true) {
     ssize_t r = ::recv(fd_, buf, sizeof(buf), 0);
     if (r > 0) {
-      outbuf_.append(buf, static_cast<size_t>(r));
-      recv_buf.append(buf, static_cast<size_t>(r));
+      buffer_.appendToInput(buf, static_cast<size_t>(r));
+      buffer_.appendToOutput(buf, static_cast<size_t>(r));  // 回显：读多少就写回多少
+      lastActive_ = std::chrono::steady_clock::now();
       continue;
     }
     if (r == 0) {
@@ -62,23 +62,24 @@ void Connection::handleRead() {
     return;
   }
 
-  if (!recv_buf.empty()) {
+  if (!buffer_.input().empty()) {
     ++message_count_;
   }
 
-  if (!outbuf_.empty() && channel_) {
+  if (buffer_.hasOutput() && channel_) {
     channel_->setEvents(kConnEventsRW);
-    (void)loop_->updateChannel(channel_);
+    (void)loop_->updateChannel(channel_.get());
   }
 }
 
 void Connection::handleWrite() {
   if (!channel_ || fd_ < 0) return;
-  std::string send_buf = outbuf_;
-  while (!outbuf_.empty()) {
-    ssize_t w = ::send(fd_, outbuf_.data(), outbuf_.size(), MSG_NOSIGNAL);
+  while (buffer_.hasOutput()) {
+    const std::string& out = buffer_.output();
+    ssize_t w = ::send(fd_, out.data(), out.size(), MSG_NOSIGNAL);
     if (w > 0) {
-      outbuf_.erase(0, static_cast<size_t>(w));
+      buffer_.retrieveFromOutput(static_cast<size_t>(w));
+      lastActive_ = std::chrono::steady_clock::now();
       continue;
     }
     if (w < 0 && errno == EINTR) continue;
@@ -87,10 +88,25 @@ void Connection::handleWrite() {
     return;
   }
 
-  if (outbuf_.empty() && channel_) {
+  if (!buffer_.hasOutput() && channel_) {
     channel_->setEvents(kConnEventsR);
-    (void)loop_->updateChannel(channel_);
+    (void)loop_->updateChannel(channel_.get());
   }
+}
+
+void Connection::refreshAlive() {
+  lastActive_ = std::chrono::steady_clock::now();
+}
+
+bool Connection::isIdleFor(const std::chrono::seconds& timeout) const {
+  auto now = std::chrono::steady_clock::now();
+  return (now - lastActive_) >= timeout;
+}
+
+void Connection::forceClose() {
+  if (!loop_) return;
+  // 必须用 queueInLoop：若从 onIdleTimer 的 connectionMap_ 遍历中调用，handleClose 会 erase 当前迭代器，导致未定义行为
+  loop_->queueInLoop(std::bind(&Connection::handleClose, this));
 }
 
 void Connection::handleClose() {
@@ -101,11 +117,13 @@ void Connection::handleClose() {
     std::cout << "连接 fd=" << fd_ << " 关闭，共处理 " << message_count_ << " 条，耗时 " << sec << " 秒\n";
   }
   if (loop_ && loop_->valid()) {
-    loop_->removeChannel(channel_);
+    loop_->unregisterConnection(fd_);
+    loop_->removeChannel(channel_.get());
+    channel_.reset();  // 析构时不再对已移除的 channel 做 removeChannel
   }
-  CloseCallback cb = closeCallback_;
-  closeCallback_ = nullptr;
-  if (cb) {
-    cb(this);  // 回调中 TcpServer 会 erase 并 delete this，析构函数负责 close(fd_) 和 delete channel_
+  // 不保留局部 std::function，避免 handleClose 返回时析构导致崩溃；将 closeCallback_ 直接 move 进队列
+  if (closeCallback_) {
+    loop_->queueInLoop(std::bind(std::move(closeCallback_), this));
+    closeCallback_ = nullptr;
   }
 }

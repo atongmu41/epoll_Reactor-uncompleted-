@@ -7,6 +7,7 @@
 #include "InetAddress.h"
 
 #include <functional>
+#include <memory>
 
 // 封装“监听”职责：监听 Socket + 监听 Channel，有连接时通过回调上报。
 class Acceptor {
@@ -33,7 +34,7 @@ class Acceptor {
   void handleAccept();
 
   Socket listen_sock_;
-  Channel* listen_channel_{nullptr};
+  std::unique_ptr<Channel> listen_channel_;
   EventLoop* loop_{nullptr};
   uint16_t port_{0};
   NewConnectionCallback newConnectionCallback_;

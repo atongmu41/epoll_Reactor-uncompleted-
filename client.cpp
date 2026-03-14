@@ -28,7 +28,7 @@ int run_client(const ClientOptions& opt) {
     return -1;
   }
 
-  const int total_msgs = 100000;
+  const int total_msgs = 1000;
   const int batch_size = 10;  // 若恢复 sleep，则每 batch_size 个包 sleep 一次
   (void)batch_size;
 
@@ -79,6 +79,21 @@ int run_client(const ClientOptions& opt) {
   auto t1 = std::chrono::steady_clock::now();
   double sec = std::chrono::duration<double>(t1 - t0).count();
   std::cout << "发送完成，共传输 " << total_msgs << " 条，耗时 " << sec << " 秒\n";
+  std::cout << "连接保持空闲，等待服务端 5s 超时关闭...\n";
+
+  char buf[1024];
+  while (true) {
+    ssize_t n = ::recv(fd, buf, sizeof(buf), 0);
+    if (n == 0) {
+      std::cout << "服务端已关闭连接（空闲超时）\n";
+      break;
+    }
+    if (n < 0 && errno == EINTR) continue;
+    if (n < 0) {
+      std::cerr << "recv error: " << std::strerror(errno) << "\n";
+      break;
+    }
+  }
   ::close(fd);
   return 0;
 }

@@ -38,15 +38,14 @@ bool Acceptor::start(EventLoop* loop, uint16_t port) {
     return false;
   }
 
-  listen_channel_ = new Channel(listen_sock_.fd());
+  listen_channel_.reset(new Channel(listen_sock_.fd()));
   listen_channel_->setEvents(kListenEvents);
   listen_channel_->setReadCallback(std::bind(&Acceptor::handleAccept, this));
   listen_channel_->setErrorCallback([]() { std::cerr << "listen fd error\n"; });
 
-  if (!loop_->addChannel(listen_channel_)) {
+  if (!loop_->addChannel(listen_channel_.get())) {
     std::cerr << "Acceptor addChannel failed: " << std::strerror(errno) << "\n";
-    delete listen_channel_;
-    listen_channel_ = nullptr;
+    listen_channel_.reset();
     listen_sock_.close();
     return false;
   }
@@ -60,9 +59,8 @@ void Acceptor::stop() {
     listen_sock_.close();
     return;
   }
-  loop_->removeChannel(listen_channel_);
-  delete listen_channel_;
-  listen_channel_ = nullptr;
+  loop_->removeChannel(listen_channel_.get());
+  listen_channel_.reset();
   loop_ = nullptr;
   listen_sock_.close();
 }
